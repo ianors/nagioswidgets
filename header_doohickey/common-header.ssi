@@ -1,0 +1,722 @@
+#!/usr/bin/perl -w
+#
+#   Copyright 2009 Ian Orszaczki
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+
+#
+#	TODO : changes to cgi.cfg need to cause a reload (for authorization)
+#	     : move expand args into a subroutine and call it for host check_commands
+#
+#	20091029	-
+#
+
+use strict;
+use CGI;
+use Storable;
+use Getopt::Long;
+
+# DEVELOPMENT
+use Data::Dumper;
+
+##-----------------------------------------------------------------------------
+## Global
+##-----------------------------------------------------------------------------
+our $DEFAULT_VERBOSITY = 0;
+our $VERBOSITY         = $DEFAULT_VERBOSITY;
+
+# ------------------------------------------------------------------------------
+# Define our constants
+# ------------------------------------------------------------------------------
+use constant OBJECTS_CACHE => "/var/cache/nagios3/objects.cache";
+use constant STATUS_DATA   => "/var/cache/nagios3/status.dat";
+use constant RESOURCE_CFG  => "/etc/nagios3/resource.cfg";
+use constant CGI_CFG       => "/etc/nagios3/cgi.cfg";
+use constant OBJECTS_STORE => "/tmp/objecthash.store";
+use constant SEP           => "^^^";
+
+##-----------------------------------------------------------------------------
+## Usage
+##-----------------------------------------------------------------------------
+sub usage {
+    my ($msg) = @_;
+
+    if ($msg) {
+        chomp $msg;
+        print STDERR "E> $msg\n";
+    }
+
+    print STDERR <<"END_OF_USAGE";
+$0 | -c name 
+-c,--contact            : contact or contactgroup
+-v,--verbosity          : verbosity      : Default
+                        : 0 = warn only
+                        : 1 = information
+                        : 2 = debug
+-?,--help               : help, print usage
+END_OF_USAGE
+
+    exit(1);
+}
+
+# ------------------------------------------------------------------------------
+# Subroutines  Logging
+# ------------------------------------------------------------------------------
+
+sub debug {
+
+    my $self = shift;
+
+    my ($mesg) = @_;
+
+    if ( $self->{_verbosity} >= 2 ) {
+        chomp $mesg;
+        print STDERR "DEBUG: $mesg\n";
+    }
+}
+
+sub info {
+    my $self = shift;
+
+    my ($mesg) = @_;
+
+    if ( $self->{_verbosity} >= 1 ) {
+        chomp $mesg;
+        print STDERR "INFO: $mesg\n";
+    }
+}
+
+sub warn {
+    my $self = shift;
+
+    my ($mesg) = @_;
+
+    chomp $mesg;
+    print STDERR "WARN: $mesg\n";
+}
+
+# ------------------------------------------------------------------------------
+# Subroutines
+# ------------------------------------------------------------------------------
+
+sub _authRights {
+    my $hashref  = shift;
+    my $contact  = shift;
+    my $authtest = shift;
+
+    $authtest = "authorized_for_" . $authtest;
+    if ( exists( $hashref->{'contact'}{$contact}{'authorization'} ) ) {
+
+        my @auths =
+          split( ' ', $hashref->{'contact'}{$contact}{'authorization'} );
+
+        for my $auth (@auths) {
+            if ( "$authtest" eq "$auth" ) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+# TODO : _printContacts		- select specific data only
+
+sub _printContacts {
+
+    my $hashref   = shift;
+    my $contacts  = shift;
+    my $popuptext = "";
+
+    my @memberslist = split( ",", $contacts );
+
+    for my $name (@memberslist) {
+        for my $entry ( keys %{ $hashref->{'contact'}{$name} } ) {
+            $popuptext .= "<br>$entry " . $hashref->{'contact'}{$name}{$entry};
+        }
+        print " <a href=\"#\" onmouseover=\"popup('"
+          . $popuptext
+          . "')\" onmouseout=\"popout()\">$name</a> ";
+    }
+}
+
+# TODO : _printContactGroups	- sort member list
+
+sub _printContactGroups {
+
+    my $hashref       = shift;
+    my $contactgroups = shift;
+
+    my @memberslist = split( ",", $contactgroups );
+
+    for my $name (@memberslist) {
+        my $members = $hashref->{'contactgroup'}{$name}{'members'};
+        $members =~ s/,/<br>/g;
+        print " <a href=\"#\" onmouseover=\"popup('" . $members
+          . "')\" onmouseout=\"popout()\">$name</a> ";
+    }
+}
+
+# TODO : _printTimePeriod	-	display days in chronological order
+
+sub _printTimePeriod {
+
+    my $hashref    = shift;
+    my $timeperiod = shift;
+    my $popuptext =
+      "<u>" . $hashref->{'timeperiod'}{$timeperiod}{'alias'} . "</u><br>";
+
+    for my $entry ( keys %{ $hashref->{'timeperiod'}{$timeperiod} } ) {
+        if ( !( $entry eq "alias" ) ) {
+            $popuptext .= "$entry "
+              . $hashref->{'timeperiod'}{$timeperiod}{$entry} . "<br>";
+        }
+    }
+    print " <a href=\"#\" onmouseover=\"popup('"
+      . $popuptext
+      . "')\" onmouseout=\"popout()\">$timeperiod</a> ";
+
+}
+
+sub _printCheckCommandLine {
+
+    my $hashref = shift;
+    my $host    = shift;
+    my $service = shift;
+
+    print "command is <b>" . $hashref->{'service'}{ $host . SEP . $service }{'check_command_line'} . "</b>";
+}
+
+sub _printCheckCommand {
+
+    my $hashref = shift;
+    my $host    = shift;
+    my $service = shift;
+
+    if ( "$service" eq "" ) {
+        print "check command is <b>" . $hashref->{'host'}{$host}{'check_command'} . "</b>";
+    }
+    else {
+        print "check command line is <b>\"" . $hashref->{'service'}{ $host . SEP . $service }{'check_command'}
+          . "\"</b>";
+    }
+}
+
+sub _loadObjectCache {
+
+    my $element_type = "";
+    my $element_name = "";
+    my $name         = "";
+    my $value        = "";
+    my $name2        = "";
+    my $value2       = "";
+    my %HoH          = ();
+    my %ResVar       = ();
+    my %Macros       = ();
+
+    my $KEYS_ALLOWED =
+"\\S*command|contact\\S*|host|service|\\S*period|alias|email|pager|\\S+_interval|max_check_attempts|address|command_line";
+
+    open( CACHE_FILE, "< " . OBJECTS_CACHE ) or print "unable to open " . OBJECTS_CACHE;
+
+    while ( my $line = <CACHE_FILE> ) {
+
+        chomp($line);
+
+        # start of a new element
+
+        if ( $line =~ /^define (\w+)/ ) {
+
+            $element_type = $1;
+
+            # skip the entries we don't need due to size
+            if ( $element_type =~ /escalation|hostgroup|servicegroup/ ) {
+                next;
+            }
+
+            # grab entry name
+
+            $line = <CACHE_FILE>;
+            chomp($line);
+
+            ( $name, $value ) = split( ' ', $line, 2 );
+
+            if ( $element_type ne "service" ) {
+                $element_name = $value;
+            }
+            else {
+                $line = <CACHE_FILE>;
+                chomp($line);
+                ( $name2, $value2 ) = split( ' ', $line, 2 );
+                $element_name = $value . SEP . $value2;
+                $HoH{$element_type}{$element_name}{$name}  = $value;
+                $HoH{$element_type}{$element_name}{$name2} = $value2;
+            }
+
+            #loop over element attributes
+            while ( my $line = <CACHE_FILE> ) {
+
+                chomp($line);
+
+                #leave loop on element end
+                if ( $line =~ /}$/ ) {
+                    last;
+                }
+
+                ( $name, $value ) = split( ' ', $line, 2 );
+
+                # include everything from contactgroups and timeperiod
+                if ( $element_type !~ /^(contactgroup|timeperiod)$/ ) {
+
+                    if ( $name !~ /^($KEYS_ALLOWED)$/ ) {
+
+                        #debug("skipping attribute $name");
+                        next;
+                    }
+
+                    #debug("including attribute ".$name);
+
+                }
+
+                $HoH{$element_type}{$element_name}{$name} = $value;
+
+            }
+        }
+    }
+
+    close(CACHE_FILE);
+
+    open( RESOURCE_FILE, "< " . RESOURCE_CFG )
+      or print "Unable to open " . RESOURCE_CFG;
+
+    while ( my $line = <RESOURCE_FILE> ) {
+
+        chomp($line);
+
+        if ( $line =~ /^\$/ ) {
+            ( $name, $value ) = split( '=', $line );
+            $ResVar{$name} = $value;
+        }
+    }
+    close(RESOURCE_FILE);
+
+    # - loop over each contactgroup and add to each contact a memberof element
+
+    open( CGI_FILE, "< " . CGI_CFG ) or print "unable to open " . CGI_CFG;
+
+    while ( my $line = <CGI_FILE> ) {
+
+        chomp($line);
+
+        if ( $line =~ /^authorized_/ ) {
+            ( $name, $value ) = split( '=', $line );
+            my @authorizedlist = split( ",", $value );
+
+            for my $member (@authorizedlist) {
+
+                if ( defined $HoH{'contact'}{$member}{'authorization'} ) {
+                    $HoH{'contact'}{$member}{'authorization'} .= " $name";
+                }
+                else {
+                    $HoH{'contact'}{$member}{'authorization'} = "$name";
+                }
+            }
+        }
+    }
+    close(CGI_FILE);
+
+    # - loop over each contactgroup and add to each contact a memberof element
+
+    for my $contactgroup ( sort keys %{ $HoH{'contactgroup'} } ) {
+
+        my @memberslist =
+          split( ",", $HoH{'contactgroup'}{$contactgroup}{'members'} );
+
+        for my $name (@memberslist) {
+            if ( defined $HoH{'contact'}{$name}{'memberof'} ) {
+                $HoH{'contact'}{$name}{'memberof'} .= ",$contactgroup";
+            }
+            else {
+                $HoH{'contact'}{$name}{'memberof'} = "$contactgroup";
+            }
+        }
+
+    }
+
+    my @values;
+    my $check_command;
+
+    # - loop over each service add create the commandline entry
+
+    for my $service ( sort keys %{ $HoH{'service'} } ) {
+
+        my $commandline = $HoH{'service'}{$service}{'check_command'};
+        (@values) = split( "!", $commandline );
+        my $command = shift(@values);
+
+        $check_command = $HoH{'command'}{$command}{'command_line'};
+
+        # Replace resource variables
+
+        while ( my ( $key, $value ) = each(%ResVar) ) {
+            $key =~ s/\$/\\\$/g;
+            if ( $check_command =~ /$key/ ) {
+                $check_command =~ s/$key/$value/g;
+            }
+        }
+
+        # Replace Args
+
+        my $argcount = 0;
+        for my $arg (@values) {
+            $argcount++;
+            $check_command =~ s/\$ARG$argcount\$/$arg/g;
+        }
+
+        # remove any not used
+        $check_command =~ s/\$ARG\d+\$//g;
+
+        # Replace Macros
+
+        $Macros{'$HOSTNAME$'} = $HoH{'service'}{$service}{'host_name'};
+
+        if (
+            defined $HoH{'host'}{ $HoH{'service'}{$service}{'host_name'} }
+            {'address'} )
+        {
+            $Macros{'$HOSTADDRESS$'} = $HoH{'host'}{ $HoH{'service'}{$service}{'host_name'} }{'address'};
+        }
+        else {
+
+            #instead of DNS Lookup, use hostname
+            $Macros{'$HOSTADDRESS$'} = $HoH{'service'}{$service}{'host_name'};
+        }
+
+        while ( my ( $key, $value ) = each(%Macros) ) {
+            $key =~ s/\$/\\\$/g;
+            if ( $check_command =~ /$key/ ) {
+                $check_command =~ s/$key/$value/g;
+
+                #debug("[$service] [$command] [$key] is in [$check_command]");
+            }
+        }
+
+        $HoH{'service'}{$service}{'check_command_line'} = $check_command;
+
+        #debug("$commandline ".@values." [$command] [$check_command]");
+
+    }
+
+    # write to file cache
+    store \%HoH, OBJECTS_STORE;
+
+    return \%HoH;
+
+}
+
+sub _menuBar {
+
+    print <<HERE;
+<STYLE TYPE="text/css">
+
+<!-- 
+td.menubar { font-size: small; text-align: center }
+-->
+
+</STYLE>
+
+<table width="100%" border="2">
+<tr>
+        <td class="menubar">
+
+        <b>NETWORK</b> All
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Network&style=hostdetail">hosts</a>,
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Network&style=detail">services</a>
+        Problems <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Network&style=hostdetail&hoststatustypes=4">hosts</a>,
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Network&style=detail&servicestatustypes=28&hoststatustypes=15">services</a>
+
+        </td>
+
+        <td class="menubar">
+
+        <b>UNIX</b> All
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Unix&style=hostdetail">hosts</a>,
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Unix&style=detail">services</a>
+        Problems <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Unix&style=hostdetail&hoststatustypes=4">hosts</a>,
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Unix&style=detail&servicestatustypes=28&hoststatustypes=15">services</a>
+
+        </td>
+
+        <td class="menubar">
+
+        <b>WINTEL</b> All
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Wintel&style=hostdetail">hosts</a>,
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Wintel&style=detail">services</a>
+        Problems <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Wintel&style=hostdetail&hoststatustypes=4">hosts</a>,
+        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Wintel&style=detail&servicestatustypes=28&hoststatustypes=15">services</a>
+
+        </td>
+
+	<td class="menubar">
+
+        <b>DBA</b> 
+        <a href="/nagios/cgi-bin/status.cgi?servicegroup=dba_alerts&style=detail">All</a>
+        <a href="/nagios/cgi-bin/status.cgi?servicegroup=dba_alerts&style=detail&servicestatustypes=28">Problems</a>
+
+        </td>
+</tr>
+</table>
+HERE
+
+}
+
+sub _hoverJScript {
+
+    print <<HERE;
+	<style type="text/css">
+
+		#popup {
+			display					: none;
+			position                : absolute;
+			width                   : 375px;
+			padding                 : 5px;
+			font-size               : 11pt;
+			color                   : #fff;
+			background-color		: black;
+			font-family             : "courier new", tahoma, verdana, arial, sans-serif;
+			font-weight             : bold;
+			text-align              : left;
+			border                  : 2px solid #333;
+			z-index                 : 200; /* aaaalways on top*/
+			opacity					: 1.00;
+		}
+
+	</style>
+
+	<div id="popup"></div>
+
+	<script type="text/javascript"><!--
+
+		var pop = document.getElementById('popup');
+
+		var xoffset = 15;
+		var yoffset = 10;
+
+		document.onmousemove = function(e) {
+			var x, y, right, bottom;
+  
+			try { x = e.pageX; y = e.pageY; } // FF
+			catch(e) { x = event.x; y = event.y; } // IE
+
+			right = (document.documentElement.clientWidth || document.body.clientWidth || document.body.scrollWidth);
+			bottom = (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop) + (window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight || document.body.scrollHeight);
+
+			x += xoffset;
+			y += yoffset;
+
+			if(x > right-pop.offsetWidth)
+				x = right-pop.offsetWidth;
+ 
+			if(y > bottom-pop.offsetHeight)
+				y = bottom-pop.offsetHeight;
+  
+			pop.style.top = y+'px';
+			pop.style.left = x+'px';
+		}
+
+		function popup(text) {
+			pop.innerHTML = text;
+			pop.style.display = 'block';
+		}
+
+		function popout() {
+			pop.style.display = 'none';
+		}
+
+	//--></script>
+HERE
+}
+
+# ------------------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------------------
+
+my $query = new CGI;
+
+my $request_uri  = "";
+my $service_name = "";
+my $host_name    = "";
+my $object       = ();
+my $type         = "NO_MATCH";
+my $HoH;
+
+my $contact = undef;
+my $help    = undef;
+
+Getopt::Long::Configure("bundling");
+
+my $result = GetOptions(
+    'contact|c=s'   => \$contact,
+    'verbosity|v=i' => \$VERBOSITY,
+    'help|?'        => \$help
+);
+
+if ($help) {
+    usage();
+}
+
+# CMD LINE TESTING
+#$HoH = _loadObjectCache();
+#_authRights($HoH,"TESTUSERNAME","all_host_commands");
+#print "<pre>".Dumper(%ENV)."</pre>";
+
+if ( defined $ENV{'REQUEST_URI'} ) {
+    $request_uri = $ENV{'REQUEST_URI'};
+    if ( $request_uri !~ /noheader/ ) {
+        _menuBar();
+    }
+}
+else {
+    print "Running from commandline - exiting\n";
+    exit;
+}
+
+my $authenticated = 0;
+my $auth_user     = "";
+
+if ( defined $ENV{'AUTHENTICATE_UID'} ) {
+    $auth_user     = lc $ENV{'AUTHENTICATE_UID'};
+    $authenticated = 1;
+}
+
+if ( $request_uri =~ /status\.cgi/ ) {
+    if ( defined $query->param('host') ) {
+        $host_name = $query->param('host');
+        if ( $host_name ne "all" ) {
+            $type = "HOST_STATUS_DETAIL";
+        }
+    }
+}
+elsif ( $request_uri =~ /extinfo\.cgi/ ) {
+    if ( defined $query->param('host') ) {
+        $host_name = $query->param('host');
+        if ( defined $query->param('service') ) {
+            $service_name = $query->param('service');
+            $type         = "SERVICE_DETAIL";
+        }
+        else {
+            $type = "HOST_DETAIL";
+        }
+    }
+}
+else {
+    exit;
+}
+
+_hoverJScript();
+
+# Debug Only
+#if ( -e OBJECTS_STORE ) {
+#	`rm /var/tmp/objecthash.store`;
+#}
+
+if ( -e OBJECTS_STORE ) {
+    if (    ( ( stat(OBJECTS_STORE) )[9] > ( stat(OBJECTS_CACHE) )[9] )
+        and ( ( stat(OBJECTS_STORE) )[9] > ( stat(CGI_CFG) )[9] ) )
+    {
+
+        # object store exists and is valid
+        $HoH = \%{ retrieve(OBJECTS_STORE) };
+
+    }
+    else {
+
+	# object cache has been modified since object store has been generated so reload
+        $HoH = _loadObjectCache();
+
+    }
+}
+else {
+
+    # no object store exists, generate
+    $HoH = _loadObjectCache();
+}
+
+
+my $serviceHash = "";
+
+if ( $type eq "HOST_DETAIL" ) {
+    $serviceHash = $HoH->{'host'}{$host_name};
+}
+elsif ( $type eq "SERVICE_DETAIL" ) {
+    $serviceHash = $HoH->{'service'}{ $host_name . SEP . $service_name };
+}
+
+if ( $serviceHash->{'check_period'} eq $serviceHash->{'notification_period'} ) {
+    print "<br>Check and Notification periods are ";
+    _printTimePeriod( $HoH, $serviceHash->{'check_period'} );
+}
+else {
+    if ( $type ne "HOST_DETAIL" ) {
+        print "<br>Check period is ";
+        _printTimePeriod( $HoH, $serviceHash->{'check_period'} );
+    }
+    print "notification period is ";
+    _printTimePeriod( $HoH, $serviceHash->{'notification_period'} );
+}
+
+print "contacting ";
+if ( defined $serviceHash->{'contacts'} ) {
+    _printContacts( $HoH, $serviceHash->{'contacts'} );
+}
+
+if ( defined $serviceHash->{'contact_groups'} ) {
+    _printContactGroups( $HoH, $serviceHash->{'contact_groups'} );
+}
+print "Checks are every "
+  . int( $serviceHash->{check_interval} )
+  . " mins. Alerts after "
+  . $serviceHash->{max_check_attempts}
+  . " consecutive failed checks (at "
+  . int( $serviceHash->{retry_interval} )
+  . " mins interval retries) <br>";
+
+# TODO : only display if user is authorized for configuration_information or higher
+if ($authenticated) {
+    if ( _authRights( $HoH, $auth_user, "configuration_information" )
+        && $type ne "HOST_DETAIL" )
+    {
+        print "";
+        _printCheckCommandLine( $HoH, "$host_name", "$service_name" );
+    }
+    else {
+        print "";
+        _printCheckCommandLine( $HoH, "$host_name", "$service_name" );
+
+        #print "";_printCheckCommand($HoH,"$host_name","$service_name");
+    }
+    print "<br><br>";
+}
+
+if ( $type ne "HOST_STATUS_DETAIL" ) {
+    #print "$type\n";
+}
+
+# if no header set and control bar
+# potential look at this longterm
+#if(defined $query->param('noheader')) {
+#	print "<table width='100%' border='1'><tr>";
+#	print "<td>replacement header</td>";
+#	print "</tr></table>";
+#}
+
