@@ -16,3 +16,4 @@ The current version is something I hacked together in perl 3 years ago, I will d
 
 For ease of use the configuration variables are embedded in the code.  Its currently configured for nagios on Ubuntu, just change the OBJECTS_CACHE,STATUS_DATA, RESOURCE_CFG,CGI_CFG to reflect the file locations.
 
+Installation - simply put the common-header.ssi in the nagios ssi folder and ensure it is executable.
