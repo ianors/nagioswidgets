@@ -37,12 +37,18 @@ our $DEFAULT_VERBOSITY = 0;
 our $VERBOSITY         = $DEFAULT_VERBOSITY;
 
 # ------------------------------------------------------------------------------
-# Define our constants
+# CONFIGURATION CONSTANTS
 # ------------------------------------------------------------------------------
+
+# Location of nagios object.cache file
 use constant OBJECTS_CACHE => "/var/cache/nagios3/objects.cache";
+# Location of nagios status.dat file 
 use constant STATUS_DATA   => "/var/cache/nagios3/status.dat";
+# Location of nagios resource.cfg file 
 use constant RESOURCE_CFG  => "/etc/nagios3/resource.cfg";
+# Location of nagios cgi.cfg file 
 use constant CGI_CFG       => "/etc/nagios3/cgi.cfg";
+# Location of hashdump for speed
 use constant OBJECTS_STORE => "/tmp/objecthash.store";
 use constant SEP           => "^^^";
 
@@ -194,7 +200,9 @@ sub _printCheckCommandLine {
     my $host    = shift;
     my $service = shift;
 
-    print "command is <b>" . $hashref->{'service'}{ $host . SEP . $service }{'check_command_line'} . "</b>";
+    print "Command is <b>"
+      . $hashref->{'service'}{ $host . SEP . $service }{'check_command_line'}
+      . "</b>";
 }
 
 sub _printCheckCommand {
@@ -204,10 +212,12 @@ sub _printCheckCommand {
     my $service = shift;
 
     if ( "$service" eq "" ) {
-        print "check command is <b>" . $hashref->{'host'}{$host}{'check_command'} . "</b>";
+        print "check command is <b>"
+          . $hashref->{'host'}{$host}{'check_command'} . "</b>";
     }
     else {
-        print "check command line is <b>\"" . $hashref->{'service'}{ $host . SEP . $service }{'check_command'}
+        print "check command line is <b>\""
+          . $hashref->{'service'}{ $host . SEP . $service }{'check_command'}
           . "\"</b>";
     }
 }
@@ -227,7 +237,8 @@ sub _loadObjectCache {
     my $KEYS_ALLOWED =
 "\\S*command|contact\\S*|host|service|\\S*period|alias|email|pager|\\S+_interval|max_check_attempts|address|command_line";
 
-    open( CACHE_FILE, "< " . OBJECTS_CACHE ) or print "unable to open " . OBJECTS_CACHE;
+    open( CACHE_FILE, "< " . OBJECTS_CACHE )
+      or print "unable to open " . OBJECTS_CACHE;
 
     while ( my $line = <CACHE_FILE> ) {
 
@@ -394,7 +405,8 @@ sub _loadObjectCache {
             defined $HoH{'host'}{ $HoH{'service'}{$service}{'host_name'} }
             {'address'} )
         {
-            $Macros{'$HOSTADDRESS$'} = $HoH{'host'}{ $HoH{'service'}{$service}{'host_name'} }{'address'};
+            $Macros{'$HOSTADDRESS$'} =
+              $HoH{'host'}{ $HoH{'service'}{$service}{'host_name'} }{'address'};
         }
         else {
 
@@ -425,59 +437,7 @@ sub _loadObjectCache {
 }
 
 sub _menuBar {
-
-    print <<HERE;
-<STYLE TYPE="text/css">
-
-<!-- 
-td.menubar { font-size: small; text-align: center }
--->
-
-</STYLE>
-
-<table width="100%" border="2">
-<tr>
-        <td class="menubar">
-
-        <b>NETWORK</b> All
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Network&style=hostdetail">hosts</a>,
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Network&style=detail">services</a>
-        Problems <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Network&style=hostdetail&hoststatustypes=4">hosts</a>,
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Network&style=detail&servicestatustypes=28&hoststatustypes=15">services</a>
-
-        </td>
-
-        <td class="menubar">
-
-        <b>UNIX</b> All
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Unix&style=hostdetail">hosts</a>,
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Unix&style=detail">services</a>
-        Problems <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Unix&style=hostdetail&hoststatustypes=4">hosts</a>,
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Unix&style=detail&servicestatustypes=28&hoststatustypes=15">services</a>
-
-        </td>
-
-        <td class="menubar">
-
-        <b>WINTEL</b> All
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Wintel&style=hostdetail">hosts</a>,
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Wintel&style=detail">services</a>
-        Problems <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Wintel&style=hostdetail&hoststatustypes=4">hosts</a>,
-        <a href="/nagios/cgi-bin/status.cgi?hostgroup=All_Wintel&style=detail&servicestatustypes=28&hoststatustypes=15">services</a>
-
-        </td>
-
-	<td class="menubar">
-
-        <b>DBA</b> 
-        <a href="/nagios/cgi-bin/status.cgi?servicegroup=dba_alerts&style=detail">All</a>
-        <a href="/nagios/cgi-bin/status.cgi?servicegroup=dba_alerts&style=detail&servicestatustypes=28">Problems</a>
-
-        </td>
-</tr>
-</table>
-HERE
-
+    # Ready for a custom menu
 }
 
 sub _hoverJScript {
@@ -575,14 +535,10 @@ if ($help) {
     usage();
 }
 
-# CMD LINE TESTING
-#$HoH = _loadObjectCache();
-#_authRights($HoH,"TESTUSERNAME","all_host_commands");
-#print "<pre>".Dumper(%ENV)."</pre>";
-
 if ( defined $ENV{'REQUEST_URI'} ) {
     $request_uri = $ENV{'REQUEST_URI'};
     if ( $request_uri !~ /noheader/ ) {
+        # Ready for a custom horizontal menu
         _menuBar();
     }
 }
@@ -591,12 +547,17 @@ else {
     exit;
 }
 
-my $authenticated = 0;
+my $authenticated = 1;
 my $auth_user     = "";
 
 if ( defined $ENV{'AUTHENTICATE_UID'} ) {
     $auth_user     = lc $ENV{'AUTHENTICATE_UID'};
-    $authenticated = 1;
+}
+if ( defined $ENV{'REMOTE_USER'} ) {
+    $auth_user     = lc $ENV{'REMOTE_USER'};
+}
+else {
+	$authenticated=0;
 }
 
 if ( $request_uri =~ /status\.cgi/ ) {
@@ -625,11 +586,6 @@ else {
 
 _hoverJScript();
 
-# Debug Only
-#if ( -e OBJECTS_STORE ) {
-#	`rm /var/tmp/objecthash.store`;
-#}
-
 if ( -e OBJECTS_STORE ) {
     if (    ( ( stat(OBJECTS_STORE) )[9] > ( stat(OBJECTS_CACHE) )[9] )
         and ( ( stat(OBJECTS_STORE) )[9] > ( stat(CGI_CFG) )[9] ) )
@@ -641,7 +597,7 @@ if ( -e OBJECTS_STORE ) {
     }
     else {
 
-	# object cache has been modified since object store has been generated so reload
+		# object cache has been modified since object store has been generated so reload
         $HoH = _loadObjectCache();
 
     }
@@ -693,9 +649,7 @@ print "Checks are every "
 
 # TODO : only display if user is authorized for configuration_information or higher
 if ($authenticated) {
-    if ( _authRights( $HoH, $auth_user, "configuration_information" )
-        && $type ne "HOST_DETAIL" )
-    {
+    if ( _authRights( $HoH, $auth_user, "configuration_information" ) && $type ne "HOST_DETAIL" ) {
         print "";
         _printCheckCommandLine( $HoH, "$host_name", "$service_name" );
     }
@@ -711,12 +665,3 @@ if ($authenticated) {
 if ( $type ne "HOST_STATUS_DETAIL" ) {
     #print "$type\n";
 }
-
-# if no header set and control bar
-# potential look at this longterm
-#if(defined $query->param('noheader')) {
-#	print "<table width='100%' border='1'><tr>";
-#	print "<td>replacement header</td>";
-#	print "</tr></table>";
-#}
-
